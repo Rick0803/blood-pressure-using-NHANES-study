@@ -1,0 +1,545 @@
+---
+title: "STA302 Final Project ~ Predicting the systolic blood pressure using multiple linear model based on NHANES study from 2011-2012"
+author: "Ruike Xu 1006562550"
+date: "10/06/2021"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction 
+The prevalence of high blood pressure has become a major threat to people's lives all over the world. It's essential for the government to keep track of the health status of people and give proper suggestions to adjust for a better lifestyle.
+
+NHANES is a study that was designed to assess the health and nutritional status of adults and children in the United States since 1960. The survey includes interviews and physical examination components and examines a nationally representative sample of approximately 5000 people each year. (National Health and Nutrition Examination Survey, 2020) We have specifically selected 17 variables from the original data set. Furthermore, only observations that are aged greater than 17 years old are selected to get a full representation of the data. (some of the measurements have a minimum age requirement)
+
+### Select the chosen columns/variables from the NHANES data set 2009-2012 with adjusted weighting and the observations are all aged greater than 17.
+```{r}
+## If the package is not already installed then use ##
+# install.packages('NHANES')
+# install.packages('tidyverse')
+library(tidyverse)
+library(NHANES)
+small.nhanes <- na.omit(NHANES[NHANES$SurveyYr=="2011_12"
+& NHANES$Age > 17,c(1,3,4,8:11,13,17,20,21,25,46,50,51,52,61)])
+small.nhanes <- as.data.frame(small.nhanes %>%
+group_by(ID) %>% filter(row_number()==1) )
+nrow(small.nhanes)
+## Checking whether there are any ID that was repeated. If not ##
+## then length(unique(small.nhanes$ID)) and nrow(small.nhanes) are same ##
+length(unique(small.nhanes$ID))
+```
+### Traning data and testing data from the data set
+```{r}
+## Create training and test set ##
+set.seed(1006562550)
+train <- small.nhanes[sample(seq_len(nrow(small.nhanes)), size = 500),]
+nrow(train)
+length(which(small.nhanes$ID %in% train$ID))
+test <- small.nhanes[!small.nhanes$ID %in% train$ID,]
+nrow(test)
+```
+### Plot histograms of all possible predictors and response variable
+```{r}
+# install.packages('purrr')
+# install.packages('tidyr')
+# install.packages('ggplot2')
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(tidyverse)
+
+train %>% select(-c(ID, SleepHrsNight)) %>% keep(is.numeric) %>% 
+  gather() %>% ggplot(aes(value)) + 
+  facet_wrap(~ key, scales = "free") + 
+  geom_histogram()
+ggplot(train, aes(x = as.factor(Gender))) + 
+  geom_bar() + labs(x="Gender") + ggtitle("Frequency of the participants in gender")
+
+ggplot(train, aes(x = as.factor(SmokeNow))) + 
+  geom_bar() + labs(x="SmokeNow") + ggtitle("Frequency of the participants' current smoking status")
+
+ggplot(train, aes(x = as.factor(Depressed))) + 
+  geom_bar() + labs(x="Depressed") + ggtitle("Frequency of the partcipants in training data that are depressed")
+
+ggplot(train, aes(x = BPSysAve)) + 
+  geom_boxplot() + labs(x="Average systolic blood pressure") + ggtitle("Boxplot for the average systolic blood pressure of the participants")
+
+```
+
+# Methodology 
+
+### Full model with all potential predictors
+```{r}
+# install.packages("car")
+library(UsingR)
+library(scatterplot3d)
+library(xtable)
+library(car)
+# Fitting a full model
+model_full <- lm(BPSysAve ~ ., data = train[, -c(1)])
+vif(model_full)
+anova(model_full)
+capture.output(anova(model_full),file="an1.pdf")
+
+# Residual plots
+resid_full <- rstudent(model_full)
+fitted_full <- predict(model_full)
+qqnorm(resid_full)
+qqline(resid_full)
+plot(resid_full ~ fitted_full, type = "p", xlab = "Fitted Values", 
+     ylab = "Standardized Residual", cex.lab = 1.2,
+     col = "red")
+lines(lowess(fitted_full, resid_full), col = "blue")
+
+# Response vs Fitted values ##
+plot(train$BPSysAve ~ fitted_full, type = "p", xlab = "Fitted Values", 
+     ylab = "BPSysAve", cex.lab = 1.2,
+     col = "red")
+abline(lm(train$BPSysAve ~ fitted_full), lwd = 2, col = "blue")
+lines(lowess(fitted_full, train$BPSysAve), col = "red")
+
+# Prediction
+pred_full <- predict(model_full, newdata = test[, -c(1)], type = "response")
+# prediction error
+pred_error_full <- mean((test$BPSysAve - pred_full)^2)
+
+# Model selection criteria
+criteria <- function(model){
+    n <- length(model$residuals)
+    p <- length(model$coefficients) - 1
+    RSS <- sum(model$residuals^2)
+    R2 <- summary(model)$r.squared
+    R2.adj <- summary(model)$adj.r.squared
+    AIC <- n*log(RSS/n) + 2*p
+    AICc <- AIC + (2*(p+2)*(p+3))/(n-p-1)
+    BIC <- n*log(RSS/n) + (p+2)*log(n)
+    res <- c(R2, R2.adj, AIC, AICc, BIC)
+    names(res) <- c("R Squared", "Adjusted R Squared", "AIC", "AICc", "BIC")
+    return(res)
+}
+
+plot(model_full)
+# Criteria for full model
+crit1 <- criteria(model = model_full)
+
+# Diagnostics check in Cook's distance, DFFITS, DFBETAS
+n_train = 500
+p_full = 37
+
+D_full <- cooks.distance(model_full)
+which(D_full > qf(0.5, p_full+1, n_train-p_full-1))
+
+dfits_full <- dffits(model_full)
+dfits_full_ben <- which(abs(dfits_full) > 2*sqrt((p_full+1)/n_train))
+
+dfb_full <- dfbetas(model_full)
+dfb_full_ben <- which(abs(dfb_full[,1]) > 2/sqrt(n_train))
+
+# Remove potential outliers
+full_outliers <- intersect(dfits_full_ben, dfb_full_ben)
+train_modified <- train[-c(full_outliers),]
+
+# Fit a new multiple linear model with modified training data
+model_full_ad <- lm(BPSysAve ~ ., data = train_modified[, -c(1)])
+vif(model_full_ad)
+anova(model_full_ad)
+capture.output(anova(model_full_ad),file="an2.png")
+
+# Residual plots
+resid_full_ad <- rstudent(model_full_ad)
+fitted_full_ad <- predict(model_full_ad)
+qqnorm(resid_full_ad)
+qqline(resid_full_ad)
+plot(resid_full_ad ~ fitted_full_ad, type = "p", xlab = "Fitted Values", 
+     ylab = "Standardized Residual", cex.lab = 1.2,
+     col = "red")
+lines(lowess(fitted_full_ad, resid_full_ad), col = "blue")
+
+# Response vs Fitted values ##
+plot(train_modified$BPSysAve ~ fitted_full_ad, type = "p", xlab = "Fitted Values", 
+     ylab = "BPSysAve", cex.lab = 1.2,
+     col = "red")
+abline(lm(train_modified$BPSysAve ~ fitted_full_ad), lwd = 2, col = "blue")
+lines(lowess(fitted_full_ad, train_modified$BPSysAve), col = "red")
+
+# Prediction
+pred_full_ad <- predict(model_full_ad, newdata = test[, -c(1)], type = "response")
+# prediction error
+pred_error_full_ad <- mean((test$BPSysAve - pred_full_ad)^2)
+
+# Criteria for adjusted full model
+crit2 <- criteria(model = model_full_ad)
+
+c(pred_error_full, pred_error_full_ad)
+crit1
+crit2
+
+```
+
+### Ridge regression (not able to use for variable selection)
+The ridge penalty shrinks the regression coefficient estimate toward zero, but not exactly zero, so I would prefer to employ Stepwise variable selection method and LASSO variable selection
+
+## Variable selection
+### Stepwise Variable selection (backward direction)
+In the backward Stepwise variable selection method, all the predictor variables we have chose in the data set are added into the model sequentially, then the predictors that don't have statistical significance in predicting anything on the response variable are removed from the model one by one. The backward method is generally preferred because it avoids suppressor effect that often occurs in forward method. (predictors are only significant when another predictor is held constant)
+
+#### Based on AIC
+```{r}
+n <- nrow(train)
+sel_var_aic_back <- step(model_full, trace = 0, k = 2, direction = "backward") 
+sel_var_aic_back_mol <- sel_var_aic_back
+sel_var_aic_back <- attr(terms(sel_var_aic_back), "term.labels")   
+sel_var_aic_back
+
+```
+#### Based on BIC
+```{r}
+n <- nrow(train)
+sel_var_bic_back <- step(model_full, trace = 0, k = log(n), direction = "backward") 
+sel_var_bic_back_mol <- sel_var_bic_back
+sel_var_bic_back <- attr(terms(sel_var_bic_back), "term.labels")   
+sel_var_bic_back
+```
+### LASSO Variable selection
+The LASSO variable selection method is a way to automatically select potential predictor variables of the response variable from a large set of candidate predictors in the training data. LASSO penalizes the absolute sum of the regression coefficient, based on tuning parameter $\lambda$, so that LASSO can reduce the coefficients of irrelevant variables to zero. We would apply cross validation of the training data to determine the severity of LASSO penalty $\lambda$
+
+#### cross validation to choose lambda
+```{r}
+library(glmnet)
+set.seed(1006562550)
+cv.out <- cv.glmnet(x = model.matrix(~., train[-c(1, 12)]), y = train$BPSysAve, standardize = T, alpha = 1, nfolds = 10)
+plot(cv.out)
+best.lambda <- cv.out$lambda.1se
+co<-coef(cv.out, s = "lambda.1se")
+
+#Selection of the significant features(predictors)
+
+## threshold for variable selection ##
+
+thresh <- 0.00
+# select variables #
+inds<-which(abs(co) > thresh )
+variables<-row.names(co)[inds]
+sel.var.lasso<-variables[!(variables %in% '(Intercept)')]
+sel.var.lasso
+best.lambda
+```
+
+### Variable choosing after backward Stepwise and and LASSO selection procedure 
+There are three possible sets of variable selections for predicting the person's systolic blood pressure from our data set.After we examine all of them, there is no sets of predictors containing our goal of interests - whether the participant is currently smoking (SmokeNow). Therefore, I would using diagnostics checking techniques and variance inflation factor to see which variables we should select. 
+```{r}
+# Fitting a model based on backward Stepwise AIC selection and add SmokeNow
+vif(sel_var_aic_back_mol)
+model_1 <- lm(BPSysAve ~ ., data = train[c(2, 3, 8, 9, 10, 12, 17)])
+summary(model_1)
+vif(model_1)
+plot(model_1)
+
+crit_1 <- criteria(model = model_1)
+
+# Diagnostics check in Cook's distance, DFFITS, DFBETAS
+n_1 = 500
+p_1 = 6
+
+D_1 <- cooks.distance(model_1)
+which(D_1 > qf(0.5, p_1+1, n_1-p_1-1))
+
+dfits_1 <- dffits(model_1)
+dfits_ben_1 <- which(abs(dfits_1) > 2*sqrt((p_1+1)/n_1))
+
+dfb_1 <- dfbetas(model_1)
+dfb_ben_1 <- which(abs(dfb_1[,1]) > 2/sqrt(n_1))
+
+# Remove potential outliers
+outliers_1 <- intersect(dfits_ben_1, dfb_ben_1)
+train_1 <- train[-c(outliers_1),]
+
+# Fit new model
+model_1_ad <- lm(BPSysAve ~ ., data = train_1[c(2, 3, 8, 9, 10, 12, 17)])
+summary(model_1_ad)
+vif(model_1_ad)
+plot(model_1_ad)
+
+crit_1_ad <- criteria(model = model_1_ad)
+crit_1
+crit_1_ad
+```
+From the variance inflation factor of the previous backward Stepwise AIC model, we can see that the predictors 'Weight', 'Height', 'BMI' have very high VIF, which are larger than the common cutoff 5. By the definition of the BMI, which is Weight/Height^2, I would drop the predictor BMI. After checking the influential observations from the training data and remove them from the training data, the prediction accuracy of the model has significantly improved in AIC, BIC, adjusted R^2. However, in the summary table, 'SmokeNow' has become less significant in the predicting model. 
+
+
+
+```{r}
+# Fitting a model based on backward Stepwise BIC selection and add SmokeNow
+vif(sel_var_bic_back_mol)
+model_2 <- lm(BPSysAve ~ ., data = train[c(2, 3, 8, 12, 17)])
+summary(model_2)
+vif(model_2)
+plot(model_2)
+crit_2 <- criteria(model = model_2)
+
+# Diagnostics check in Cook's distance, DFFITS, DFBETAS
+n_2 = 500
+p_2 = 4
+
+D_2 <- cooks.distance(model_2)
+which(D_2 > qf(0.5, p_2+1, n_2-p_2-1))
+
+dfits_2 <- dffits(model_2)
+dfits_ben_2 <- which(abs(dfits_2) > 2*sqrt((p_2+1)/n_2))
+
+dfb_2 <- dfbetas(model_2)
+dfb_ben_2 <- which(abs(dfb_2[,1]) > 2/sqrt(n_2))
+
+# Remove potential outliers
+outliers_2 <- intersect(dfits_ben_2, dfb_ben_2)
+train_2 <- train[-c(outliers_2),]
+
+# Fit new model
+model_2_ad <- lm(BPSysAve ~ ., data = train_2[c(2, 3, 8, 12, 17)])
+summary(model_2_ad)
+vif(model_2_ad)
+plot(model_2_ad)
+
+crit_2_ad <- criteria(model = model_2_ad)
+crit_2
+crit_2_ad
+```
+There is no significantly large VIF in this model, so we would examine the influential observations in the training data that potentially affect the model prediction. The prediction accuracy of the model has significantly improved in AIC, BIC, adjusted R^2 after we removed the potential outliers. 
+
+```{r}
+# Fitting a model based on LASSO selection and add SmokeNow
+model_3 <- lm(BPSysAve ~ ., data = train[c(3, 12, 17)])
+summary(model_3)
+vif(model_3)
+plot(model_3)
+crit_3 <- criteria(model = model_3)
+
+# Diagnostics check in Cook's distance, DFFITS, DFBETAS
+n_3 = 500
+p_3 = 2
+
+D_3 <- cooks.distance(model_3)
+which(D_3 > qf(0.5, p_3+1, n_3-p_3-1))
+
+dfits_3 <- dffits(model_3)
+dfits_ben_3 <- which(abs(dfits_3) > 2*sqrt((p_3+1)/n_3))
+
+dfb_3 <- dfbetas(model_3)
+dfb_ben_3 <- which(abs(dfb_3[,1]) > 2/sqrt(n_3))
+
+# Remove potential outliers
+outliers_3 <- intersect(dfits_ben_3, dfb_ben_3)
+train_3 <- train[-c(outliers_3),]
+
+# Fit new model
+model_3_ad <- lm(BPSysAve ~ ., data = train_2[c(3, 12, 17)])
+summary(model_3_ad)
+vif(model_3_ad)
+plot(model_3_ad)
+
+crit_3_ad <- criteria(model = model_3_ad)
+crit_3
+crit_3_ad
+```
+The VIF for the model consisting predictor 'Age' and 'SmokeNow' indicates no strong multicollinearity of the model. After we check the influential observations for the model in training data and remove potential outliers, the prediction accuracy measure has significantly improved. Also, in this model, the level of statistical significance for predictor 'SmokeNow' greatly improved. 
+
+
+
+## Model Validation
+
+### K-fold Cross validation
+Cross validation is a resampling technique of the training data to evaluate the model we constructed. K refers to the number of groups that the training data is to be split into. We would first shuffle the data set randomly and split the data set into k groups. Each group of data is used to be testing data once and used to train the model K-1 times. K is chosen such that divided training data and testing data is large enough to be representative of the broader data set. We would fix K to be 10, which is value that generally found to generate relatively low variance and bias through experimentation. 
+
+## shrinkage method with k-fold cross validation
+
+```{r}
+## Ridge regression for Stepwise backward aic, bic models, and for LASSO selection model with 10-fold cross validation
+set.seed(1006562550)
+library(glmnet)
+library(rms)
+library(MASS)
+## model_1
+cv_ridge_1 <- cv.glmnet(x = model.matrix(~., train_1[c(2, 3, 8, 9, 10, 17)]), y = train_1$BPSysAve, standardize = T, alpha = 0, nfolds = 10)
+# fit best model
+lambda_ridge_1 <- cv_ridge_1$lambda.min
+model_ridge_1 <- glmnet(x = model.matrix(~., train_1[c(2, 3, 8, 9, 10, 17)]), y = train_1$BPSysAve, standardize = T, alpha = 0, lambda = lambda_ridge_1)
+# Prediction
+pred_ridge_1 <- predict(model_ridge_1, newx = model.matrix(~., test[c(2, 3, 8, 9, 10, 17)]), type = "response")
+# Prediction error
+pred_err1 <- mean((test$BPSysAve - pred_ridge_1)^2)
+coef(model_ridge_1)
+
+## model_2
+cv_ridge_2 <- cv.glmnet(x = model.matrix(~., train_2[c(2, 3, 8, 17)]), y = train_2$BPSysAve, standardize = T, alpha = 0, nfolds = 10)
+# fit best model
+lambda_ridge_2 <- cv_ridge_2$lambda.min
+model_ridge_2 <- glmnet(x = model.matrix(~., train_2[c(2, 3, 8, 17)]), y = train_2$BPSysAve, standardize = T, alpha = 0, lambda = lambda_ridge_2)
+# Prediction
+pred_ridge_2 <- predict(model_ridge_2, newx = model.matrix(~., test[c(2, 3, 8, 17)]), type = "response")
+# Prediction error
+pred_err2 <- mean((test$BPSysAve - pred_ridge_2)^2)
+coef(model_ridge_2)
+
+## model_3
+cv_ridge_3 <- cv.glmnet(x = model.matrix(~., train_3[c(3, 17)]), y = train_3$BPSysAve, standardize = T, alpha = 0, nfolds = 10)
+# fit best model
+lambda_ridge_3 <- cv_ridge_3$lambda.min
+model_ridge_3 <- glmnet(x = model.matrix(~., train_3[c(3, 17)]), y = train_3$BPSysAve, standardize = T, alpha = 0, lambda = lambda_ridge_3)
+# Prediction
+pred_ridge_3 <- predict(model_ridge_3, newx = model.matrix(~., test[c(3, 17)]), type = "response")
+# Prediction error
+pred_err3 <- mean((test$BPSysAve - pred_ridge_3)^2)
+coef(model_ridge_3)
+
+# Comparing the three model prediction error
+c(pred_err1, pred_err2, pred_err3)
+
+```
+
+```{r}
+## LASSO regression for Stepwise backward aic, bic models, and for LASSO selection model with 10-fold cross validation
+
+set.seed(1006562550)
+library(glmnet)
+library(rms)
+library(MASS)
+## model_1
+cv_lasso_1 <- cv.glmnet(x = model.matrix(~., train_1[c(2, 3, 8, 9, 10, 17)]), y = train_1$BPSysAve, standardize = T, alpha = 1, nfolds = 10)
+# fit best model
+lambda_lasso_1 <- cv_lasso_1$lambda.min
+model_lasso_1 <- glmnet(x = model.matrix(~., train_1[c(2, 3, 8, 9, 10, 17)]), y = train_1$BPSysAve, standardize = T, alpha = 1, lambda = lambda_lasso_1)
+# Prediction
+pred_lasso_1 <- predict(model_lasso_1, newx = model.matrix(~., test[c(2, 3, 8, 9, 10, 17)]), type = "response")
+# Prediction error
+pred_err4 <- mean((test$BPSysAve - pred_lasso_1)^2)
+coef(model_lasso_1)
+
+## model_2
+cv_lasso_2 <- cv.glmnet(x = model.matrix(~., train_2[c(2, 3, 8, 17)]), y = train_2$BPSysAve, standardize = T, alpha = 1, nfolds = 10)
+# fit best model
+lambda_lasso_2 <- cv_lasso_2$lambda.min
+model_lasso_2 <- glmnet(x = model.matrix(~., train_2[c(2, 3, 8, 17)]), y = train_2$BPSysAve, standardize = T, alpha = 1, lambda = lambda_lasso_2)
+# Prediction
+pred_lasso_2 <- predict(model_lasso_2, newx = model.matrix(~., test[c(2, 3, 8, 17)]), type = "response")
+# Prediction error
+pred_err5 <- mean((test$BPSysAve - pred_lasso_2)^2)
+coef(model_lasso_2)
+
+## model_3
+cv_lasso_3 <- cv.glmnet(x = model.matrix(~., train_3[c(3, 17)]), y = train_3$BPSysAve, standardize = T, alpha = 1, nfolds = 10)
+# fit best model
+lambda_lasso_3 <- cv_lasso_3$lambda.min
+model_lasso_3 <- glmnet(x = model.matrix(~., train_3[c(3, 17)]), y = train_3$BPSysAve, standardize = T, alpha = 1, lambda = lambda_lasso_3)
+# Prediction
+pred_lasso_3 <- predict(model_lasso_3, newx = model.matrix(~., test[c(3, 17)]), type = "response")
+# Prediction error
+pred_err6 <- mean((test$BPSysAve - pred_lasso_3)^2)
+coef(model_lasso_3)
+
+# Comparing the three model prediction error
+c(pred_err4, pred_err5, pred_err6)
+```
+
+```{r}
+## Elastic-Net with (alpha = 0.5) regression for Stepwise backward aic, bic models, and for LASSO selection model with 10-fold cross validation
+set.seed(1006562550)
+library(glmnet)
+library(rms)
+library(MASS)
+## model_1
+cv_en_1 <- cv.glmnet(x = model.matrix(~., train_1[c(2, 3, 8, 9, 10, 17)]), y = train_1$BPSysAve, standardize = T, alpha = 0.5, nfolds = 10)
+# fit best model
+lambda_en_1 <- cv_en_1$lambda.min
+model_en_1 <- glmnet(x = model.matrix(~., train_1[c(2, 3, 8, 9, 10, 17)]), y = train_1$BPSysAve, standardize = T, alpha = 0.5, lambda = lambda_en_1)
+# Prediction
+pred_en_1 <- predict(model_en_1, newx = model.matrix(~., test[c(2, 3, 8, 9, 10, 17)]), type = "response")
+# Prediction error
+pred_err7 <- mean((test$BPSysAve - pred_en_1)^2)
+coef(model_en_1)
+
+## model_2
+cv_en_2 <- cv.glmnet(x = model.matrix(~., train_2[c(2, 3, 8, 17)]), y = train_2$BPSysAve, standardize = T, alpha = 0.5, nfolds = 10)
+# fit best model
+lambda_en_2 <- cv_en_2$lambda.min
+model_en_2 <- glmnet(x = model.matrix(~., train_2[c(2, 3, 8, 17)]), y = train_2$BPSysAve, standardize = T, alpha = 0.5, lambda = lambda_en_2)
+# Prediction
+pred_en_2 <- predict(model_en_2, newx = model.matrix(~., test[c(2, 3, 8, 17)]), type = "response")
+# Prediction error
+pred_err8 <- mean((test$BPSysAve - pred_en_2)^2)
+coef(model_en_2)
+
+## model_3
+cv_en_3 <- cv.glmnet(x = model.matrix(~., train_3[c(3, 17)]), y = train_3$BPSysAve, standardize = T, alpha = 0.5, nfolds = 10)
+# fit best model
+lambda_en_3 <- cv_en_3$lambda.min
+model_en_3 <- glmnet(x = model.matrix(~., train_3[c(3, 17)]), y = train_3$BPSysAve, standardize = T, alpha = 0.5, lambda = lambda_en_3)
+# Prediction
+pred_en_3 <- predict(model_en_3, newx = model.matrix(~., test[c(3, 17)]), type = "response")
+# Prediction error
+pred_err9 <- mean((test$BPSysAve - pred_en_3)^2)
+coef(model_en_3)
+
+
+# Comparing the three model prediction error
+c(pred_err7, pred_err8, pred_err9)
+```
+```{r}
+# The lowest prediction error of all shrinkage regression model
+which.min(c(pred_err1, pred_err2, pred_err3, pred_err4, pred_err5, pred_err6, pred_err7, pred_err8, pred_err9))
+c(pred_err1, pred_err2, pred_err3, pred_err4, pred_err5, pred_err6, pred_err7, pred_err8, pred_err9)
+min(c(pred_err1, pred_err2, pred_err3, pred_err4, pred_err5, pred_err6, pred_err7, pred_err8, pred_err9))
+# The Stepwise variable BIC selection with additional 'SmokeNow' variable under ridge penalty has the lowest prediction error on the test data set with respect to the response variable systolic blood pressure. 
+pred_err2
+coef(model_ridge_2)
+bp_plot <- plot(pred_ridge_2, test$BPSysAve, main = "Predicted systolic blood presure vs Actual systolic blood pressure")
+capture.output(bp_plot,file="BPSysAve.predicted.vs.Actual")
+```
+
+# Reference
+National Health and Nutrition Examination Survey (NHANES). (2020, August 27). Retrieved June 12, 2021, from https://www.cdc.gov/aging/publications/nhanes/index.html
+
+Nhanes 2011-2012 overview. (2021, April 23). Retrieved June 12, 2021, from https://wwwn.cdc.gov/nchs/nhanes/continuousnhanes/overview.aspx?BeginYear=2011
+
+
+```{r}
+# Here you can run your methods
+# Logistic regression on the treatment/control variable for propensity score
+propensity_score <- glm(smoking_status ~ age + as.factor(gender) + as.factor(hypertension) + as.factor(ever_married) + as.factor(work_type) + as.factor(Residence_type) + avg_glucose_level, family = binomial, data = survey_data)
+
+# Add forecast to dataset
+survey_data <- augment(propensity_score, data = survey_data, type.predict = "response") %>% dplyr::select(-.resid, -.std.resid, -.hat, -.sigma, -.cooksd)
+
+# Use nearest neighbor approach with propensity score distance to create matches
+
+survey_data$treated <- 
+  if_else(survey_data$smoking_status == 0, 0, 1)
+
+survey_data$treated <- 
+  as.integer(survey_data$treated)
+
+matches <- arm::matching(z = survey_data$treated, 
+                         score = survey_data$.fitted)
+survey_data <- cbind(survey_data, matches)
+
+survey_data_matched <- survey_data %>% filter(match.ind != 0) %>% dplyr::select(-match.ind, -pairs, -treated)
+
+propensity_score_regression <- 
+  lm(bmi ~ age + as.factor(gender) + as.factor(hypertension) + as.factor(ever_married) + avg_glucose_level + as.factor(work_type) + as.factor(Residence_type) + as.factor(smoking_status), data = survey_data_matched)
+
+huxtable::huxreg(propensity_score_regression)
+summary(propensity_score_regression)
+
+install.packages("huxtable")
+install.packages("broom")
+install.packages("arm")
+install.packages("MatchIt")
+install.packages("lmtest")
+install.packages("sandwich")
+```
+
+$\log(\frac{p}{1-p}) = \beta_{0} + \beta_1X_{i1} + \beta_2X_{i2} +... +\beta_kX_{ik} $
+$\alpha = 0.05$
